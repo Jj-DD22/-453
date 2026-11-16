@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>自动剪辑 - V17 旧版剪辑</title>
+    <style>
+        * { box-sizing: border-box; }
+        [hidden], .hidden { display: none !important; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 40px 16px;
+            background: #f3f4f6;
+            color: #111827;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            margin: 0 0 12px;
+            color: #2563eb;
+            font-size: 36px;
+            line-height: 1.1;
+            font-weight: 900;
+            letter-spacing: -0.025em;
+        }
+        .subtitle {
+            margin: 0 0 32px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+        .version-bar {
+            width: min(650px, 100%);
+            margin: -18px 0 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .local-badge {
+            color: #15803d;
+            font-size: 13px;
+            font-weight: 800;
+        }
+        .return-link {
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            padding: 8px 13px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-size: 13px;
+            font-weight: 800;
+            text-decoration: none;
+        }
+        .return-link:hover { background: #dbeafe; }
+        form {
+            width: min(650px, 100%);
+            padding: 32px;
+            border: 1px solid #f3f4f6;
+            border-radius: 16px;
+            background: #fff;
+            box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.10), 0 8px 10px -6px rgb(0 0 0 / 0.10);
+        }
+        .section {
+            margin-bottom: 24px;
+            padding: 20px;
+            border-bottom: 2px solid;
+            border-radius: 12px;
+        }
+        .section-blue {
+            border-color: #3b82f6;
+            background: #eff6ff;
+        }
+        .section-green {
+            border-color: #22c55e;
+            background: #f0fdf4;
+        }
+        .section-label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 18px;
+            font-weight: 900;
+        }
+        .section-blue .section-label { color: #1e40af; }
+        .section-green .section-label { color: #166534; }
+        input[type="password"], select {
+            width: 100%;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 12px 16px;
+            background: #fff;
+            color: #1f2937;
+            font: inherit;
+            font-size: 18px;
+            outline: none;
+            box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+        }
+        input[type="password"]:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgb(59 130 246 / 0.25);
+        }
+        select {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        select:focus {
+            border-color: #22c55e;
+            box-shadow: 0 0 0 3px rgb(34 197 94 / 0.22);
+        }
+        .engine-row {
+            display: flex;
+            gap: 16px;
+            margin-top: 12px;
+        }
+        .engine-option {
+            position: relative;
+            flex: 1;
+            cursor: pointer;
+        }
+        .engine-option > input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .engine-card {
+            height: 100%;
+            padding: 16px;
+            border: 2px solid #d1d5db;
+            border-radius: 8px;
+            background: #fff;
+            display: block;
+            transition: 0.15s ease;
+        }
+        .engine-option > input:checked + .engine-card {
+            border-color: #22c55e;
+            background: #dcfce7;
+        }
+        .engine-title {
+            display: block;
+            color: #1f2937;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .engine-copy {
+            display: block;
+            margin-top: 4px;
+            color: #6b7280;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .engine-copy strong { color: #16a34a; }
+        .count-row {
+            margin-top: 16px;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #fff;
+            display: flex;
+            align-items: center;
+        }
+        .count-row label {
+            margin-right: 12px;
+            color: #374151;
+            font-weight: 700;
+        }
+        .upload-list {
+            margin-bottom: 24px;
+            display: grid;
+            gap: 16px;
+        }
+        .upload-card {
+            padding: 16px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #f9fafb;
+            box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            transition: box-shadow 0.15s ease, border-color 0.15s ease;
+        }
+        .upload-card:hover {
+            border-color: #d1d5db;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.10), 0 2px 4px -2px rgb(0 0 0 / 0.10);
+        }
+        .upload-card label {
+            display: block;
+            margin-bottom: 8px;
+            color: #1f2937;
+            font-weight: 700;
+        }
+        input[type="file"] {
+            width: 100%;
+            color: #4b5563;
+            font: inherit;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        input[type="file"]::file-selector-button {
+            margin-right: 16px;
+            border: 0;
+            border-radius: 999px;
+            padding: 8px 16px;
+            background: #e5e7eb;
+            color: #374151;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .upload-card:first-child input[type="file"]::file-selector-button {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        input[type="file"]::file-selector-button:hover { background: #d1d5db; }
+        .upload-card:first-child input[type="file"]::file-selector-button:hover { background: #bfdbfe; }
+        .action-row { display: flex; gap: 16px; }
+        .primary-button {
+            flex: 1;
+            border: 0;
+            border-radius: 12px;
+            padding: 16px;
+            background: linear-gradient(to right, #2563eb, #4f46e5);
+            color: #fff;
+            font: inherit;
+            font-weight: 900;
+            box-shadow: 0 10px 15px -3px rgb(37 99 235 / 0.25);
+            cursor: pointer;
+            transition: transform 0.15s ease, filter 0.15s ease;
+        }
+        .primary-button:hover { transform: scale(1.02); filter: brightness(0.95); }
+        .primary-button:disabled { cursor: wait; opacity: 0.72; transform: none; }
+        #status { margin-top: 24px; }
+        .progress-track {
+            width: 100%;
+            height: 16px;
+            margin-bottom: 8px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #e5e7eb;
+            box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.06);
+        }
+        #progressBar {
+            width: 0;
+            height: 100%;
+            border-radius: 999px;
+            background: #3b82f6;
+            transition: width 0.3s ease, background 0.3s ease;
+        }
+        #progressBar.done { background: #22c55e; }
+        #statusText {
+            margin: 0;
+            color: #4b5563;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.65;
+            text-align: center;
+        }
+        .success-title {
+            color: #16a34a;
+            font-size: 20px;
+            font-weight: 900;
+        }
+        .error-title {
+            color: #dc2626;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .download-button {
+            display: inline-block;
+            margin-top: 8px;
+            border-radius: 12px;
+            padding: 12px 32px;
+            background: #22c55e;
+            color: #fff;
+            font-weight: 700;
+            text-decoration: none;
+            box-shadow: 0 10px 15px -3px rgb(34 197 94 / 0.22);
+        }
+        .download-button:hover { background: #16a34a; }
+        .download-link {
+            display: inline-block;
+            margin-top: 12px;
+            color: #3b82f6;
+            font-size: 14px;
+            text-decoration: underline;
+        }
+        .retry-button {
+            display: block;
+            width: 100%;
+            margin-top: 16px;
+            border: 0;
+            background: transparent;
+            color: #3b82f6;
+            font: inherit;
+            font-size: 14px;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+        .warning {
+            display: block;
+            margin-top: 8px;
+            color: #b45309;
+            font-size: 13px;
+        }
+        @media (max-width: 680px) {
+            body { padding-top: 24px; }
+            h1 { font-size: 30px; }
+            form { padding: 20px; }
+            .section { padding: 16px; }
+            .count-row { align-items: stretch; flex-direction: column; gap: 8px; }
+            .count-row label { margin-right: 0; }
+        }
+    </style>
+</head>
+<body>
+    <h1>自动剪辑工作台</h1>
+    <p class="subtitle">云端批量剪辑与计费管理</p>
+
+    <div class="version-bar">
+        <span class="local-badge">本机剪辑 · 不连接 115</span>
+        <a class="return-link" href="/#launch">返回 V16</a>
+    </div>
+
+    <form id="uploadForm" action="/v17/run" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="section section-blue">
+            <label class="section-label" for="v17-api-key">API Key</label>
+            <input id="v17-api-key" type="password" name="customer_key" required autocomplete="off"
+                   maxlength="512" placeholder="填写管理员后台生成的 API Key">
+        </div>
+
+        <div class="section section-green">
+            <label class="section-label">⚙️ 第二步：选择剪辑引擎与裂变数量</label>
+
+            <div class="engine-row">
+                <label class="engine-option">
+                    <input type="radio" name="version" value="v17" checked>
+                    <span class="engine-card">
+                        <span class="engine-title">自动剪辑引擎</span>
+                        <span class="engine-copy">只保留核心拼接，极速防报错。<br><strong>推荐！盲盒混剪极速出片</strong></span>
+                    </span>
+                </label>
+            </div>
+
+            <div class="count-row">
+                <label for="v17-video-count">🔄 要生成几条不重复的视频？</label>
+                <select id="v17-video-count" name="video_count">
+                    <option value="1">只生成 1 条 (.mp4)</option>
+                    <option value="3">批量裂变 3 条 (打包下载)</option>
+                    <option value="4">批量裂变 4 条 (打包下载)</option>
+                    <option value="5">批量裂变 5 条 (打包下载)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="upload-list">
+            <div class="upload-card">
+                <label for="v17-core-files">📁 1. 核心素材 (必传 mp4 视频)</label>
+                <input id="v17-core-files" type="file" name="core_files" accept=".mp4,.mov" multiple required>
+            </div>
+            <div class="upload-card">
+                <label for="v17-qual-files">📁 2. 优质素材池</label>
+                <input id="v17-qual-files" type="file" name="qual_files" accept=".mp4,.mov" multiple>
+            </div>
+            <div class="upload-card">
+                <label for="v17-dedup-files">📁 3. 去重素材池</label>
+                <input id="v17-dedup-files" type="file" name="dedup_files" accept=".mp4,.mov" multiple>
+            </div>
+            <div class="upload-card">
+                <label for="v17-mask-files">📁 4. 蒙版素材</label>
+                <input id="v17-mask-files" type="file" name="mask_files" accept=".mp4,.mov,.png,.jpg,.jpeg,.webp" multiple>
+            </div>
+            <div class="upload-card">
+                <label for="v17-sticker-files">📁 5. 贴纸素材池</label>
+                <input id="v17-sticker-files" type="file" name="sticker_files" accept=".png" multiple>
+            </div>
+            <div class="upload-card">
+                <label for="v17-image-files">📁 6. 图片素材池</label>
+                <input id="v17-image-files" type="file" name="image_files" accept=".png,.jpg,.jpeg,.webp,.bmp" multiple>
+            </div>
+        </div>
+
+        <div id="actionButtons" class="action-row">
+            <button id="v17-submit" class="primary-button" type="submit">🚀 第三步：一键批量出片！</button>
+        </div>
+
+        <div id="status" class="hidden" aria-live="polite">
+            <div class="progress-track">
+                <div id="progressBar"></div>
+            </div>
+            <div id="statusText">正在上传文件...</div>
+        </div>
+    </form>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const submitButton = document.getElementById('v17-submit');
+        const actionButtons = document.getElementById('actionButtons');
+        const statusDiv = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const progressBar = document.getElementById('progressBar');
+        const apiInput = document.getElementById('v17-api-key');
+        const savedApiKeyName = 'v17_secure_studio_api_key';
+        const savedTaskName = 'v17_local_task_id';
+        let pollTimer = null;
+
+        function rememberApiKey(value) {
+            try {
+                if (value) localStorage.setItem(savedApiKeyName, value);
+                else localStorage.removeItem(savedApiKeyName);
+            } catch (_) {}
+        }
+
+        function setStatusMessage(message, className) {
+            statusText.replaceChildren();
+            const text = document.createElement('span');
+            text.className = className || '';
+            text.textContent = message || '';
+            statusText.appendChild(text);
+        }
+
+        function makeRetryButton() {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'retry-button';
+            retry.textContent = '重试';
+            retry.addEventListener('click', resetForNext);
+            statusText.appendChild(retry);
+        }
+
+        function resetForNext() {
+            const apiKey = apiInput.value;
+            statusDiv.classList.add('hidden');
+            actionButtons.classList.remove('hidden');
+            submitButton.disabled = false;
+            progressBar.style.width = '0%';
+            progressBar.classList.remove('done');
+            form.reset();
+            apiInput.value = apiKey;
+            try { localStorage.removeItem(savedTaskName); } catch (_) {}
+        }
+
+        function renderDone(data) {
+            progressBar.style.width = '100%';
+            progressBar.classList.add('done');
+            statusText.replaceChildren();
+
+            const title = document.createElement('span');
+            title.className = 'success-title';
+            title.textContent = '🎉 剪辑完成！出片成功！';
+            statusText.append(title, document.createElement('br'), document.createElement('br'));
+
+            const downloadText = data.file_type === 'zip'
+                ? '⬇️ 点击下载批量成品包 (.zip)'
+                : '⬇️ 点击下载成品视频 (.mp4)';
+            const href = '/v17/download?task_id=' + encodeURIComponent(data.task_id);
+
+            const button = document.createElement('a');
+            button.className = 'download-button';
+            button.href = href;
+            button.download = '';
+            button.textContent = downloadText;
+            statusText.append(button, document.createElement('br'));
+
+            const backupLink = document.createElement('a');
+            backupLink.className = 'download-link';
+            backupLink.href = href;
+            backupLink.download = '';
+            backupLink.textContent = '👉 如果上方绿色按钮点击没反应，请点击这行蓝色文字，或者【长按/右键】选择“下载链接”';
+            statusText.append(backupLink);
+
+            if (data.warning) {
+                const warning = document.createElement('span');
+                warning.className = 'warning';
+                warning.textContent = data.warning;
+                statusText.append(warning);
+            }
+
+            const again = document.createElement('button');
+            again.type = 'button';
+            again.className = 'retry-button';
+            again.textContent = '再剪一批';
+            again.addEventListener('click', resetForNext);
+            statusText.appendChild(again);
+            submitButton.disabled = false;
+        }
+
+        function renderState(data) {
+            const progress = Math.max(0, Math.min(100, Number(data.progress) || 0));
+            progressBar.style.width = progress + '%';
+            if (data.status === 'done') {
+                renderDone(data);
+                try { localStorage.removeItem(savedTaskName); } catch (_) {}
+                return;
+            }
+            if (data.status === 'error') {
+                setStatusMessage('❌ ' + (data.message || '任务处理失败'), 'error-title');
+                makeRetryButton();
+                submitButton.disabled = false;
+                try { localStorage.removeItem(savedTaskName); } catch (_) {}
+                return;
+            }
+            setStatusMessage(data.message || data.stage || '任务已提交，正在排队...');
+        }
+
+        async function pollStatus(taskId) {
+            if (pollTimer) window.clearTimeout(pollTimer);
+            try {
+                const response = await fetch('/v17/status?task_id=' + encodeURIComponent(taskId), {cache: 'no-store'});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || '任务状态读取失败');
+                renderState(data);
+                if (data.status === 'queued' || data.status === 'processing' || data.status === 'initializing') {
+                    pollTimer = window.setTimeout(() => pollStatus(taskId), 1200);
+                }
+            } catch (error) {
+                setStatusMessage(error.message || '任务状态读取失败，正在重试...');
+                pollTimer = window.setTimeout(() => pollStatus(taskId), 2500);
+            }
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (submitButton.disabled) return;
+            const customerKey = apiInput.value.trim();
+            rememberApiKey(customerKey);
+            submitButton.disabled = true;
+            actionButtons.classList.add('hidden');
+            statusDiv.classList.remove('hidden');
+            progressBar.classList.remove('done');
+            progressBar.style.width = '10%';
+            setStatusMessage('正在打包素材并发送至本机引擎... 🚀');
+
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: new FormData(form),
+                    headers: {'Accept': 'application/json', 'X-Requested-With': 'fetch'}
+                });
+                const data = await response.json().catch(() => ({message: '本机引擎返回内容无法读取'}));
+                if (!response.ok) throw new Error(data.message || '任务提交失败');
+                try { localStorage.setItem(savedTaskName, data.task_id); } catch (_) {}
+                renderState(data);
+                pollStatus(data.task_id);
+            } catch (error) {
+                setStatusMessage('❌ ' + (error.message || '任务提交失败'), 'error-title');
+                makeRetryButton();
+                submitButton.disabled = false;
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            try {
+                const savedApiKey = localStorage.getItem(savedApiKeyName) || '';
+                if (savedApiKey) apiInput.value = savedApiKey;
+                const savedTask = localStorage.getItem(savedTaskName) || '';
+                if (savedTask) {
+                    actionButtons.classList.add('hidden');
+                    statusDiv.classList.remove('hidden');
+                    submitButton.disabled = true;
+                    pollStatus(savedTask);
+                }
+            } catch (_) {}
+            apiInput.addEventListener('input', () => rememberApiKey(apiInput.value.trim()));
+        });
+    </script>
+</body>
+</html>

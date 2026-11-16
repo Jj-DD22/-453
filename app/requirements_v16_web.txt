@@ -1,0 +1,12 @@
+flask
+edge-tts
+opencv-python
+numpy
+pillow
+moviepy
+pytesseract
+mediapipe
+onnxruntime
+insightface
+scipy
+scikit-image
