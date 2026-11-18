@@ -65,7 +65,7 @@ if os.name == "nt":
 
 PY312 = (
     os.environ.get("V16_PYTHON_EXE", "").strip()
-    or "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+    or (sys.executable if os.name == "nt" else "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3")
 )
 BASE_DIR = os.environ.get(
     "BASE_DIR",
@@ -428,6 +428,7 @@ _VIDEO_ENCODER_ARGS = None
 _VIDEO_ENCODER_REASON = ""
 _ENCODER_METRICS_LOCK = threading.Lock()
 _ENCODER_METRICS = {
+    "h264_qsv": {"attempts": 0, "successes": 0, "failures": 0, "seconds": 0.0},
     "h264_nvenc": {"attempts": 0, "successes": 0, "failures": 0, "seconds": 0.0},
     "h264_videotoolbox": {
         "attempts": 0,
@@ -625,6 +626,7 @@ def _video_encoder_policy():
         "nvenc-strict": "nvidia-strict",
         "gpu-strict": "nvidia-strict",
         "apple": "videotoolbox",
+        "intel": "qsv",
         "software": "cpu",
         "libx264": "cpu",
         "off": "cpu",
@@ -640,6 +642,23 @@ def _hardware_encoder_allowed():
         "no",
         "off",
     }
+
+
+def _probe_qsv_encoder():
+    """Test a real Quick Sync encode with the same frame format as delivery."""
+    ffmpeg = os.environ.get("V16_FFMPEG_EXE") or "ffmpeg"
+    try:
+        probe = subprocess.run(
+            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "testsrc2=size=720x1280:rate=30:duration=0.5", "-an", "-c:v", "h264_qsv",
+             "-preset", "medium", "-global_quality", "23", "-pix_fmt", "nv12", "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        )
+        if probe.returncode == 0:
+            return True, ""
+        return False, f"Intel Quick Sync 实测失败，改用 CPU。{probe.stderr.strip()[-240:]}"
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, f"Intel Quick Sync 实测失败，改用 CPU。{error}"
 
 
 def _probe_videotoolbox_encoder():
@@ -754,6 +773,10 @@ def _select_video_encoder():
     if not hardware_allowed or policy == "cpu":
         return "libx264", "已选择 CPU 编码"
 
+    if policy == "qsv":
+        available, reason = _probe_qsv_encoder()
+        return ("qsv", "") if available else ("libx264", reason)
+
     if policy in {"nvidia-auto", "nvidia-strict"} or (
         policy == "auto" and sys.platform == "win32"
     ):
@@ -762,6 +785,10 @@ def _select_video_encoder():
             return "nvenc", ""
         if policy == "nvidia-strict":
             raise RuntimeError(f"NVIDIA NVENC 严格模式验收失败：{reason}")
+        if policy == "auto":
+            available, reason = _probe_qsv_encoder()
+            if available:
+                return "qsv", ""
         return "libx264", reason
 
     if policy == "videotoolbox" or (
@@ -776,6 +803,7 @@ def _select_video_encoder():
 def _encoder_codec_name(mode):
     return {
         "nvenc": "h264_nvenc",
+        "qsv": "h264_qsv",
         "videotoolbox": "h264_videotoolbox",
         "libx264": "libx264",
     }.get(str(mode or ""), str(mode or "unselected"))
@@ -801,7 +829,9 @@ def _video_encoder_args(crf=23, preset="veryfast"):
                 "V16_ENCODER_STATUS "
                 + json.dumps(status, ensure_ascii=False, separators=(",", ":"))
             )
-            if _VIDEO_ENCODER_ARGS == "nvenc":
+            if _VIDEO_ENCODER_ARGS == "qsv":
+                print("   -> 视频编码：Intel Quick Sync H.264 硬件加速（真实编码探测通过）")
+            elif _VIDEO_ENCODER_ARGS == "nvenc":
                 print(
                     "   -> 视频编码：NVIDIA H.264 NVENC 硬件加速"
                     f"（GPU {NVIDIA_GPU_INDEX}，真实编码探测通过）"
@@ -811,6 +841,9 @@ def _video_encoder_args(crf=23, preset="veryfast"):
             else:
                 suffix = f"；{_VIDEO_ENCODER_REASON}" if _VIDEO_ENCODER_REASON else ""
                 print(f"   -> 视频编码：CPU libx264 兼容模式{suffix}")
+    if _VIDEO_ENCODER_ARGS == "qsv":
+        return ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality",
+                str(max(1, min(51, int(crf)))), "-profile:v", "high", "-pix_fmt", "nv12"]
     if _VIDEO_ENCODER_ARGS == "nvenc":
         # NVDEC/CUDA is enabled only by the separately assembled, capability-
         # gated normalize graph. Complex filters and OpenCV remain on CPU so
@@ -1279,7 +1312,13 @@ COSYVOICE_THREADS = _bounded_env_int(
     12,
 )
 SUBTITLE_ENABLED = os.environ.get("V16_AUTO_SUBTITLES", "1") != "0"
-SUBTITLE_ASR = os.environ.get("V16_SUBTITLE_ASR", "bijian").strip().lower() or "bijian"
+LOCAL_WHISPER_DIR = Path(os.environ.get("V16_LOCAL_WHISPER_DIR") or
+                         Path(__file__).resolve().parent.parent / "runtime" / "whisper-small")
+DEFAULT_SUBTITLE_ASR = (
+    "faster-whisper" if os.name == "nt" and (LOCAL_WHISPER_DIR / "model.bin").is_file()
+    and (LOCAL_WHISPER_DIR / "tokenizer.json").is_file() else "bijian"
+)
+SUBTITLE_ASR = os.environ.get("V16_SUBTITLE_ASR", "").strip().lower() or DEFAULT_SUBTITLE_ASR
 SUBTITLE_TIMEOUT = max(60, int(os.environ.get("V16_SUBTITLE_TIMEOUT", "900")))
 SUBTITLE_OCR_SAMPLES = max(4, min(12, int(os.environ.get("V16_SUBTITLE_OCR_SAMPLES", "8"))))
 DEDUP2_TARGET_SECONDS = max(
@@ -2420,7 +2459,7 @@ def _write_promo_skip_status(message, reason):
 
 
 def _command_video_encoder(cmd):
-    for encoder in ("h264_nvenc", "h264_videotoolbox", "libx264"):
+    for encoder in ("h264_qsv", "h264_nvenc", "h264_videotoolbox", "libx264"):
         if encoder in cmd:
             return encoder
     return ""
@@ -2428,7 +2467,7 @@ def _command_video_encoder(cmd):
 
 def _is_hardware_encoder_startup_failure(cmd, stderr):
     encoder = _command_video_encoder(cmd)
-    if encoder not in {"h264_nvenc", "h264_videotoolbox"}:
+    if encoder not in {"h264_qsv", "h264_nvenc", "h264_videotoolbox"}:
         return False
     lowered = str(stderr or "").lower()
     if encoder == "h264_videotoolbox":
@@ -2453,6 +2492,7 @@ def _libx264_fallback_command(cmd, crf=23, preset="veryfast"):
     """Replace hardware-only arguments while preserving filters and mappings."""
     fallback = []
     skip_with_value = {
+        "-global_quality",
         "-q:v",
         "-realtime",
         "-prio_speed",
@@ -2476,10 +2516,12 @@ def _libx264_fallback_command(cmd, crf=23, preset="veryfast"):
         if token in skip_with_value:
             index += 2
             continue
-        if token in {"h264_videotoolbox", "h264_nvenc"}:
+        if token in {"h264_videotoolbox", "h264_nvenc", "h264_qsv"}:
             fallback.extend(["libx264", "-preset", str(preset), "-crf", str(crf)])
             if FFMPEG_THREADS:
                 fallback.extend(["-threads", str(FFMPEG_THREADS)])
+        elif token == "nv12" and index and cmd[index - 1] == "-pix_fmt":
+            fallback.append("yuv420p")
         else:
             fallback.append(token)
         index += 1
@@ -3601,6 +3643,9 @@ def video_has_visible_subtitles(file_path):
 def _subtitle_cache_key(file_path):
     stat = os.stat(file_path)
     raw = f"{os.path.realpath(file_path)}:{stat.st_size}:{stat.st_mtime_ns}:{SUBTITLE_ASR}"
+    if SUBTITLE_ASR == "faster-whisper":
+        model = LOCAL_WHISPER_DIR / "model.bin"
+        raw += f":{model.resolve()}:{model.stat().st_mtime_ns if model.is_file() else 0}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:18]
 
 
@@ -3789,14 +3834,16 @@ def transcribe_video_to_srt(file_path, label):
 
 
 def _transcribe_video_to_srt_locked(file_path, label):
-    """Use the VideoCaptioner backend directly so a broken wrapper CLI cannot block V16."""
+    """Transcribe each source with the configured backend and reuse its subtitle cache."""
     if not has_audio_stream(file_path):
         print(f"   -> {label}没有音轨，无法自动匹配字幕。")
         return None
     subtitle_dir = os.path.join(TMP_DIR, "auto_subtitles")
     os.makedirs(subtitle_dir, exist_ok=True)
     cache_key = _subtitle_cache_key(file_path)
-    audio_path = os.path.join(subtitle_dir, f"{cache_key}.mp3")
+    offline = SUBTITLE_ASR == "faster-whisper"
+    audio_extension = "wav" if offline else "mp3"
+    audio_path = os.path.join(subtitle_dir, f"{cache_key}.{audio_extension}")
     srt_path = os.path.join(subtitle_dir, f"{cache_key}.srt")
     persistent_srt_path = os.path.join(SUBTITLE_CACHE_DIR, f"{cache_key}.srt")
     if os.path.exists(srt_path) and os.path.getsize(srt_path) > 16:
@@ -3811,7 +3858,7 @@ def _transcribe_video_to_srt_locked(file_path, label):
         run_ffmpeg(
             [
                 "ffmpeg", "-y", "-i", file_path, "-vn", "-ac", "1", "-ar", "16000",
-                "-c:a", "libmp3lame", "-b:a", "64k", audio_path,
+                *(["-c:a", "pcm_s16le"] if offline else ["-c:a", "libmp3lame", "-b:a", "64k"]), audio_path,
             ]
         )
     except (OSError, RuntimeError, ValueError):
@@ -3821,6 +3868,10 @@ def _transcribe_video_to_srt_locked(file_path, label):
 import os, sys
 sys.path.insert(0, sys.argv[4])
 engine=sys.argv[3].strip().lower()
+if engine == 'faster-whisper':
+    from v16_subtitle_asr import local_whisper_to_srt
+    print(local_whisper_to_srt(sys.argv[1], sys.argv[2], sys.argv[5]))
+    raise SystemExit(0)
 if engine == 'bijian':
     from v16_subtitle_asr import SubtitleServiceUnavailable, transcribe_to_srt
     try:
@@ -3862,7 +3913,7 @@ data.save(save_path=sys.argv[2])
 print(sys.argv[2])
 """
     exe = PY312 if os.path.exists(PY312) else sys.executable
-    env = runtime_service_env()
+    env = os.environ.copy() if SUBTITLE_ASR == "faster-whisper" else runtime_service_env()
     try:
         result = subprocess.run(
             [
@@ -3873,6 +3924,7 @@ print(sys.argv[2])
                 srt_path,
                 SUBTITLE_ASR,
                 os.path.dirname(os.path.abspath(__file__)),
+                str(LOCAL_WHISPER_DIR),
             ],
             capture_output=True,
             text=True,
@@ -3911,7 +3963,7 @@ print(sys.argv[2])
         _atomic_publish_cache_file(srt_path, persistent_srt_path)
     except OSError:
         pass
-    print(f"   -> {label}已通过 VideoCaptioner/{SUBTITLE_ASR} 生成匹配字幕。")
+    print(f"   -> {label}已通过 {SUBTITLE_ASR} 生成匹配字幕。")
     return srt_path
 
 
@@ -4564,6 +4616,10 @@ def normalize_video(
     output_frames=None,
     video_only=False,
     manual_cover_vf=None,
+    picture_fit="cover",
+    exact_tail=False,
+    video_stream=None,
+    source_gray=None,
 ):
     if trim and trim_frames:
         raise ValueError("trim and trim_frames cannot be used together")
@@ -4579,11 +4635,17 @@ def normalize_video(
         }
     )
 
-    vf_parts = [
-        f"scale={W}:{H}:force_original_aspect_ratio=increase",
-        f"crop={W}:{H}",
-        f"fps={FPS}",
-    ]
+    if picture_fit == "contain":
+        vf_parts = [f"scale={W}:{H}:force_original_aspect_ratio=decrease",
+                    f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2"]
+    else:
+        vf_parts = [f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}"]
+    vf_parts.append(f"fps={FPS}")
+    if exact_tail:
+        if not video_only or not output_frames:
+            raise ValueError("精确镜头需要视频帧数")
+        vf_parts.extend([f"tpad=stop_mode=clone:stop_duration={output_frames / FPS:.9f}",
+                         f"trim=end_frame={output_frames}", f"setpts=N/({FPS}*TB)"])
     af = "volume=0" if mute else "volume=1.0"
     af += ",aresample=44100"
     video_encoder_args = _video_encoder_args(23, "veryfast")
@@ -4592,7 +4654,8 @@ def normalize_video(
     cmd = ["ffmpeg", "-y"]
     if trim:
         start, dur = trim
-        cmd.extend(["-ss", f"{start:.3f}", "-t", f"{dur:.3f}"])
+        digits = 9 if exact_tail else 3
+        cmd.extend(["-ss", f"{start:.{digits}f}", "-t", f"{dur:.{digits}f}"])
     elif trim_frames:
         start_frame, end_frame = (int(value) for value in trim_frames)
         if start_frame < 0 or end_frame <= start_frame:
@@ -4641,7 +4704,12 @@ def normalize_video(
     if not video_only and not source_has_audio:
         cmd.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
     vf_parts.append("format=yuv420p")
-    cmd.extend(["-vf", ",".join(vf_parts)])
+    input_video = "0:v:0" if video_stream is None else f"0:{int(video_stream)}"
+    if source_gray is not None:
+        graph = f"[{input_video}]{','.join(vf_parts)},split[pic][copy];[copy]scale=9:8:flags=area,format=gray[raw]"
+        cmd.extend(["-filter_complex_threads", "1", "-filter_complex", graph])
+    else:
+        cmd.extend(["-vf", ",".join(vf_parts)])
     if trim_frames and not video_only:
         if source_has_audio:
             af += f",atrim=start={start:.6f}:end={start + dur:.6f}"
@@ -4649,7 +4717,7 @@ def normalize_video(
             af += f",atrim=duration={dur:.6f}"
         af += ",asetpts=PTS-STARTPTS"
     if video_only:
-        cmd.extend(["-an", "-map", "0:v:0"])
+        cmd.extend(["-an", "-map", "[pic]" if source_gray is not None else input_video])
     elif source_has_audio:
         cmd.extend(["-af", af, "-map", "0:v:0", "-map", "0:a:0"])
     else:
@@ -4680,6 +4748,10 @@ def normalize_video(
     if output_frames is not None:
         cmd.extend(["-frames:v", str(int(output_frames))])
     cmd.append(output_path)
+    if source_gray is not None:
+        cmd.extend(["-map", "[raw]", "-an", "-c:v", "rawvideo", "-threads", "1",
+                    "-pix_fmt", "gray", "-fps_mode", "passthrough", "-frames:v", str(int(output_frames)),
+                    "-f", "rawvideo", os.fspath(source_gray)])
     gpu_eligible, gpu_reason, source_contract = _gpu_normalize_eligibility(
         input_path,
         video_encoder_args,
@@ -4691,7 +4763,7 @@ def normalize_video(
         fast_dedup_style=fast_dedup_style,
         force_keyframe_frames=keyframe_frames,
         output_frames=output_frames,
-        has_manual_cover=bool(manual_cover_vf),
+        has_manual_cover=bool(manual_cover_vf) or picture_fit != "cover" or exact_tail or video_stream is not None,
     )
     if not gpu_eligible and _gpu_pipeline_policy() == "strict":
         raise RuntimeError(
@@ -9264,7 +9336,10 @@ if face_landmarker is not None:
 cpu_encoder_args=['-c:v','libx264','-preset','veryfast','-crf','23','-profile:v','high','-pix_fmt','yuv420p']
 if ffmpeg_threads:
     cpu_encoder_args.extend(['-threads',str(ffmpeg_threads)])
-if encoder_mode == 'nvenc':
+if encoder_mode == 'qsv':
+    encoder_args=['-c:v','h264_qsv','-preset','medium','-global_quality','23','-profile:v','high','-pix_fmt','nv12']
+    active_encoder='h264_qsv'
+elif encoder_mode == 'nvenc':
     encoder_args=[
         '-c:v','h264_nvenc','-gpu',str(nvidia_gpu_index),'-preset','p4',
         '-tune','hq','-rc','vbr','-cq','23','-b:v','0',
@@ -9293,7 +9368,7 @@ print(
     f'encoder={active_encoder} elapsed_seconds={merge_elapsed:.3f} '
     f'returncode={merge_result.returncode} fallback=0'
 )
-if merge_result.returncode != 0 and encoder_mode in {'nvenc','videotoolbox'} and allow_hardware_fallback:
+if merge_result.returncode != 0 and encoder_mode in {'qsv','nvenc','videotoolbox'} and allow_hardware_fallback:
     print(
         'V16_ENCODER_FALLBACK '
         f'from={active_encoder} to=libx264 stage=face_renderer reason=runtime'
@@ -9346,9 +9421,9 @@ if merge_result.returncode != 0:
     stdout_text = res.stdout or ""
     if stdout_text.strip():
         print(stdout_text.strip())
-    if "V16_ENCODER_FALLBACK from=h264_nvenc" in stdout_text:
+    if "V16_ENCODER_FALLBACK from=h264_" in stdout_text:
         _disable_hardware_encoder_for_current_run(
-            "人脸特效 NVENC 合成失败，后续步骤改用 CPU"
+            "人脸特效硬件合成失败，后续步骤改用 CPU"
         )
         with _ENCODER_METRICS_LOCK:
             _ENCODER_FALLBACK_COUNT += 1
@@ -10057,6 +10132,12 @@ def _openclaw_generate_copy(frame_paths, prompt):
 
 
 def _codex_generate_copy(frame_paths, prompt):
+    if os.name == "nt":
+        import codex_bridge
+        try:
+            return codex_bridge.generate(frame_paths, prompt, timeout=max(60, VISION_TIMEOUT))
+        except codex_bridge.CodexBridgeError as exc:
+            raise RuntimeError(str(exc)) from exc
     codex_bin = os.environ.get("V16_CODEX_BIN", "").strip() or shutil.which("codex")
     if not codex_bin:
         bundled_codex = "/Applications/ChatGPT.app/Contents/Resources/codex"
@@ -11531,7 +11612,7 @@ def _timed_voice_audio_filter(sentence_plan, phrase_timeline, input_label="1:a")
     return ";".join(filters)
 
 
-def _render_concat_list_cfr(concat_list, output_path, duration, input_paths=None):
+def _render_concat_list_cfr(concat_list, output_path, duration, input_paths=None, shuffle_paths=()):
     """Rebuild mixed time bases and H.264 headers as one monotonic CFR timeline."""
     input_paths = list(input_paths or [])
     if not input_paths:
@@ -11561,6 +11642,58 @@ def _render_concat_list_cfr(concat_list, output_path, duration, input_paths=None
             ]
         )
         concat_inputs.extend([f"[v{index}]", f"[a{index}]"])
+    post_zoom_layers_file = os.path.join(TMP_DIR, "dongge_post_zoom_layers.json")
+    if (
+        shuffle_paths
+        or os.path.normcase(os.path.abspath(str(output_path)))
+        == os.path.normcase(os.path.abspath(os.path.join(TMP_DIR, "base_concat.mp4")))
+    ):
+        try:
+            os.remove(post_zoom_layers_file)
+        except OSError:
+            pass
+    layers_json = os.environ.get("V17_DONGGE_NATIVE_LAYERS_JSON") if shuffle_paths else None
+    if layers_json:
+        from bottom_overlay import resolve_shuffle_timeline, shuffle_concat_labels
+
+        settings = json.loads(layers_json)
+        layers = settings.get("bottom_layers") or []
+        masks = settings.get("shuffle_masks")
+        opening = float(settings.get("opening_duration_seconds") or 0.0)
+        if layers or masks:
+            durations = [get_duration(path) for path in input_paths]
+            shuffle_set = set(shuffle_paths)
+            if masks:
+                concat_inputs[::2] = shuffle_concat_labels(
+                    command, filters, input_paths, durations, shuffle_set,
+                    [], opening, TMP_DIR, W, H, masks=masks,
+                )
+                print(
+                    "   -> 栋哥组：已在推拉前按实际打乱镜头应用 "
+                    f"{len((masks or {}).get('boxes', []))} 个字幕遮挡框。"
+                )
+            if layers:
+                timeline_info = resolve_shuffle_timeline(
+                    input_paths, durations, shuffle_set, opening
+                )
+                shuffle_intervals = timeline_info["shuffle_intervals"]
+                if shuffle_intervals:
+                    with open(post_zoom_layers_file, "w", encoding="utf-8") as _pz_out:
+                        json.dump(
+                            {
+                                "bottom_layers": layers,
+                                "shuffle_intervals": [
+                                    list(span) for span in shuffle_intervals
+                                ],
+                                "opening_duration_seconds": opening,
+                                "base_duration": sum(durations),
+                            },
+                            _pz_out,
+                            ensure_ascii=False,
+                        )
+                    print(
+                        f"   -> 栋哥组：已记录 {len(layers)} 张底部叠图待推拉后固定叠加。"
+                    )
     filters.append(
         f"{''.join(concat_inputs)}concat=n={len(input_paths)}:v=1:a=1[v_concat][a_concat]"
     )
@@ -13835,6 +13968,7 @@ def concat_clips(
     finish_last_clip=FINISH_LAST_CLIP,
     repeat=False,
     preserve_all=False,
+    shuffle_paths=(),
 ):
     """Join real clips without padding; optionally preserve every supplied clip."""
     concat_list = os.path.join(TMP_DIR, "concat.txt")
@@ -13849,6 +13983,7 @@ def concat_clips(
     )
     total = 0.0
     selected_paths = []
+    effective_shuffle_paths = set(shuffle_paths or ())
     with open(concat_list, "w", encoding="utf-8") as f:
         index = 0
         while total < target - 0.01:
@@ -13877,6 +14012,8 @@ def concat_clips(
                             mute=False,
                             trim=(0.0, selected_duration),
                         )
+                        if clip in effective_shuffle_paths:
+                            effective_shuffle_paths.add(selected_path)
                     escaped = selected_path.replace("'", "'\\''")
                     f.write(f"file '{escaped}'\n")
                     selected_paths.append(selected_path)
@@ -13884,6 +14021,8 @@ def concat_clips(
                     break
                 trimmed = os.path.join(TMP_DIR, f"trim_final_{index:03d}.mp4")
                 normalize_video(clip, trimmed, mute=False, trim=(0, remaining))
+                if clip in effective_shuffle_paths:
+                    effective_shuffle_paths.add(trimmed)
                 escaped = trimmed.replace("'", "'\\''")
                 f.write(f"file '{escaped}'\n")
                 selected_paths.append(trimmed)
@@ -13899,6 +14038,7 @@ def concat_clips(
         output_path,
         total,
         input_paths=selected_paths,
+        shuffle_paths=effective_shuffle_paths if shuffle_paths else (),
     )
     return get_duration(output_path) or total
 
@@ -14311,11 +14451,26 @@ def final_render(
         )
         selected_corner_mode = "off"
         selected_corner_radius = 0
+    _norm_base_concat = os.path.normcase(os.path.abspath(str(base_concat)))
+    _main_render_sources = {
+        os.path.normcase(os.path.abspath(os.path.join(TMP_DIR, "base_concat.mp4"))),
+        os.path.normcase(os.path.abspath(os.path.join(TMP_DIR, "face_effect.mp4"))),
+    }
+    post_zoom_config = None
+    if _norm_base_concat in _main_render_sources:
+        post_zoom_layers_file = os.path.join(TMP_DIR, "dongge_post_zoom_layers.json")
+        if os.path.isfile(post_zoom_layers_file):
+            with open(post_zoom_layers_file, "r", encoding="utf-8") as _pz_in:
+                post_zoom_config = json.load(_pz_in)
+    post_zoom_layers = (post_zoom_config or {}).get("bottom_layers") or []
+    post_zoom_intervals = (post_zoom_config or {}).get("shuffle_intervals") or []
+    has_post_zoom_bottom_layers = bool(post_zoom_layers and post_zoom_intervals)
     if (
         not sticker_files
         and not dynamic_sticker
         and not mask_vids
         and not TIMEPIN_ZOOM_ACTIVE
+        and not has_post_zoom_bottom_layers
     ):
         # Preserve the zero-generation fast path only after checking the real
         # stream.  Most timelines come from _render_concat_list_cfr and are
@@ -14482,6 +14637,29 @@ def final_render(
             )
             v_curr = next_v
         v_out = v_curr
+
+    if has_post_zoom_bottom_layers:
+        from bottom_overlay import append_post_zoom_bottom_layers
+
+        prev_inputs = inputs_count
+        v_out, inputs_count = append_post_zoom_bottom_layers(
+            cmd,
+            filter_parts,
+            v_out,
+            inputs_count,
+            post_zoom_layers,
+            post_zoom_intervals,
+            float((post_zoom_config or {}).get("opening_duration_seconds") or 0.0),
+            TMP_DIR,
+            W,
+            H,
+            base_duration=(post_zoom_config or {}).get("base_duration") or render_duration,
+        )
+        if inputs_count > prev_inputs:
+            print(
+                f"   -> 栋哥组：已在推拉后固定叠加 {inputs_count - prev_inputs} 张底部图片"
+                "（仅打乱镜头区间显示，核心片段 0 污染）。"
+            )
 
     filter_parts.extend(
         [
@@ -15749,6 +15927,7 @@ def main():
         finish_last_clip=True,
         repeat=False,
         preserve_all=True,
+        shuffle_paths=dedup_interleave_paths if three_pool_active else (),
     )
     if not minimum_allowed_duration <= natural_timeline_duration <= maximum_allowed_duration:
         raise RuntimeError(
@@ -15889,7 +16068,12 @@ def main():
 if __name__ == "__main__":
     try:
         try:
-            main()
+            dongge_request = os.environ.get("V16_DONGGE_RENDER_REQUEST")
+            if dongge_request:
+                from dongge_fixed_render import render_fixed_timeline
+                render_fixed_timeline(sys.modules[__name__], dongge_request)
+            else:
+                main()
         except VisualQualityBlockedError as exc:
             print(f"[VisualQualityBlocked] {exc}")
             raise SystemExit(44)

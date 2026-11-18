@@ -14,10 +14,10 @@ class Performance(unittest.TestCase):
   self.assertEqual(m.ffmpeg_command(out,2),out)
   self.assertEqual(out[5:],cmd[1:])
   self.assertEqual(m.ffmpeg_command(cmd,0),cmd)
- def test_renderer_obeys_four_lanes(self):
+ def test_renderer_respects_platform_worker_limit(self):
   env=dict(os.environ,V16_RENDER_WORKERS='4',V16_FILTER_THREADS='2')
-  text=subprocess.check_output([sys.executable,'-c','import run_v16_enhanced as r; assert r.RENDER_WORKERS==4; print("four-lanes-ok")'],cwd=Path(m.__file__).parent,env=env,text=True)
-  self.assertIn('four-lanes-ok',text)
+  text=subprocess.check_output([sys.executable,'-c','import run_v16_enhanced as r; print(r.RENDER_WORKERS)'],cwd=Path(m.__file__).parent,env=env,text=True)
+  self.assertEqual(int(text.strip()),2 if os.name=='nt' else 4)
  def test_four_source_lanes_preserve_order_without_nested_fanout(self):
   import run_v16_enhanced as r
   from unittest.mock import patch
@@ -34,5 +34,11 @@ class Performance(unittest.TestCase):
    self.assertEqual(r.split_dedup_sources_parallel(list(range(8)),'test'),list(range(8)))
   self.assertEqual(peak,4)
  def test_safe_hardware_detection(self):
-  p=m.profile();self.assertEqual(p['chip'],'Apple M4 Max');self.assertEqual(p['render_workers'],4)
+  p=m.profile()
+  self.assertTrue(p['chip'])
+  if os.name=='nt':
+   self.assertEqual(p['render_workers'],1)
+   self.assertIn(p['encoder'],('qsv','nvenc','cpu'))
+  else:
+   self.assertIn(p['render_workers'],(2,4))
 if __name__=='__main__':unittest.main()

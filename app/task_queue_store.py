@@ -10,6 +10,15 @@ from contextlib import closing
 from pathlib import Path
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit or roll back, then release the database handle."""
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 WAITING_STATUS = "waiting"
 ACTIVE_STATUSES = {"running", "skip_requested", "finalizing"}
 TERMINAL_STATUSES = {
@@ -455,6 +464,7 @@ class PersistentTaskQueue:
             str(self.database_path),
             timeout=timeout_seconds,
             isolation_level=None,
+            factory=_ClosingConnection,
         )
         connection.row_factory = sqlite3.Row
         connection.execute(
@@ -821,18 +831,23 @@ class PersistentTaskQueue:
             # instance lock. Renderer checkpoint also holds an OS task lock.
             fill_recovered = 0
             for row in connection.execute(
-                "SELECT task_id,auto_fill_json FROM task_queue WHERE status='running' AND control_state='active'").fetchall():
+                "SELECT task_id,auto_fill_json FROM task_queue "
+                "WHERE status='running' AND control_state IN ('active', 'paused', 'pause_requested', 'resume_requested')"
+            ).fetchall():
                 try:
                     fill = json.loads(row['auto_fill_json'] or '{}')
                 except (ValueError, TypeError):
                     continue
                 if (fill.get('version') == '8020-autofill-20260927.1'
                         and fill.get('state') in ('rendering', 'completed')):
-                    connection.execute(
+                    cursor = connection.execute(
                         "UPDATE task_queue SET status='waiting',started_at=NULL,finished_at=NULL,"
-                        "stage='重启后正在核对成片，只恢复缺少部分' WHERE task_id=? AND status='running'",
-                        (row['task_id'],))
-                    fill_recovered += 1
+                        "stage='重启后正在核对成片，只恢复缺少部分',"
+                        "control_state='active',control_error='',control_changed_at=? "
+                        "WHERE task_id=? AND status='running'",
+                        (finished_at, row['task_id']),
+                    )
+                    fill_recovered += int(cursor.rowcount or 0)
             interrupted = connection.execute(
                 """
                 UPDATE task_queue
@@ -2752,35 +2767,49 @@ class PersistentTaskQueue:
 
     def redo_completed_owned(self, owner_user_id, task_id, *, tenant_id,
                              submission_key, validate_config):
+        owner = _normalized_identity(owner_user_id, 'owner_user_id', required=True)
+        tenant = _normalized_identity(tenant_id, 'tenant_id', required=True)
+        return self._redo_completed(owner, tenant, task_id, submission_key, validate_config)
+
+    def redo_completed_local_dongge(self, task_id, *, submission_key, validate_config):
+        return self._redo_completed(None, None, task_id, submission_key, validate_config)
+
+    redo_completed_local = redo_completed_local_dongge
+
+    def _redo_completed(self, owner_user_id, tenant_id, task_id, submission_key, validate_config):
         """Append a fresh job; source and shared-asset protection stay atomic.
 
         The daily asset collector also uses BEGIN IMMEDIATE. It cannot remove
         the last successful asset reference between validation and enqueue.
         """
         self.ensure_ready()
-        owner_user_id = _normalized_identity(owner_user_id, 'owner_user_id', required=True)
-        tenant_id = _normalized_identity(tenant_id, 'tenant_id', required=True)
         submission_key = self._normalize_submission_key(submission_key)
         if not submission_key:
             raise ValueError('重做操作缺少防重复标识')
         with closing(self._connect()) as connection:
             connection.execute('BEGIN IMMEDIATE')
             original = connection.execute(
-                'SELECT * FROM task_queue WHERE task_id=? AND owner_user_id=? AND tenant_id=?',
+                'SELECT * FROM task_queue WHERE task_id=? AND owner_user_id IS ? AND tenant_id IS ?',
                 (str(task_id), owner_user_id, tenant_id),
             ).fetchone()
             if original is None or original['status'] not in {'succeeded', 'review_required'}:
                 connection.execute('ROLLBACK')
                 return None
             existing = connection.execute(
-                'SELECT * FROM task_queue WHERE owner_user_id=? AND tenant_id=? AND submission_key=?',
+                'SELECT * FROM task_queue WHERE owner_user_id IS ? AND tenant_id IS ? AND submission_key=?',
                 (owner_user_id, tenant_id, submission_key),
             ).fetchone()
             if existing is not None:
                 connection.execute('COMMIT')
                 return self._decode_row(existing, include_config=True)
             decoded = self._decode_row(original, include_config=True)
+            if not isinstance(decoded.get('config'), dict):
+                connection.execute('ROLLBACK')
+                return None
             config = dict(decoded['config'])
+            if owner_user_id is None and config.get('edition_mode') not in (None, '', 'original', 'dongge', 'v2'):
+                connection.execute('ROLLBACK')
+                return None
             config.pop('server_output_placement', None)
             validate_config(config)
             config['redo_of_task_id'] = str(task_id)

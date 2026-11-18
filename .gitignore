@@ -1,6 +1,14 @@
 # Runtime data, caches, queues, and exported videos
 data/
+runtime/
 logs/
+tmp_*/
+**/tmp_process_v16_enhanced/
+.upload_tmp/
+裂变成片输出/
+排队任务成片/
+页面裂变成片/
+直接保存成片/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,15 +17,27 @@ __pycache__/
 *.sqlite3-wal
 .v16_cache/
 .v16_upload_order.json
+.v16_erp_*
 .v17_*
 *.lock
 *.log
 *.bak*
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.mp3
+*.wav
+*.m4a
+*.zip
 
 # Secrets & local environment overrides
 .env
+.env.*
+!.env.example
 *.key
-.local_model_*.key
+*.dpapi
+.local_model_*
 session.key
 
 # OS metadata

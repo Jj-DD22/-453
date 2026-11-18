@@ -52,7 +52,7 @@ def _discover_media_tools() -> tuple[str, str, list[str]]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default=os.environ.get('V16_HOST', '0.0.0.0'))
+    parser.add_argument('--host', default=os.environ.get('V16_HOST', '127.0.0.1' if os.name == 'nt' else '0.0.0.0'))
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', '8038')))
     parser.add_argument('--data-dir', type=Path, default=ROOT / 'data')
     args = parser.parse_args()
@@ -71,6 +71,15 @@ def main():
             os.environ.pop(key)
     ffmpeg_bin, ffprobe_bin, path_list = _discover_media_tools()
     os.environ['PATH'] = path_list[0]
+    if os.name == 'nt':
+        tess = ROOT / 'runtime/tesseract/tesseract.exe'
+        if tess.is_file():
+            os.environ.setdefault('V16_TESSERACT_EXE', str(tess))
+            os.environ.setdefault('TESSDATA_PREFIX', str(tess.parent / 'tessdata'))
+            os.environ['PATH'] = str(tess.parent) + os.pathsep + os.environ['PATH']
+        os.environ.setdefault('V16_CAPTION_FONT', str(Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts/msyh.ttc'))
+        os.environ['OMP_NUM_THREADS'] = '2'
+        os.environ['OPENBLAS_NUM_THREADS'] = '2'
     if ffmpeg_bin:
         os.environ['V16_FFMPEG_EXE'] = ffmpeg_bin
     if ffprobe_bin:

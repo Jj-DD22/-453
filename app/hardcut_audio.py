@@ -45,8 +45,15 @@ COSYVOICE_FALLBACK_PROMPT = Path(
     )
 )
 
-_COSYVOICE_AVAILABLE = COSYVOICE_PYTHON.is_file() and COSYVOICE_SCRIPT.is_file()
-DEFAULT_VOICE_PRESET = "cosy_female" if _COSYVOICE_AVAILABLE else "xiaoxiao"
+_cosyvoice_root = Path(os.environ.get("V17_COSYVOICE_ROOT") or Path.home() / ".openclaw" / "CosyVoice")
+_cosyvoice_weights = _cosyvoice_root / "pretrained_models" / "CosyVoice-300M"
+_COSYVOICE_AVAILABLE = (
+    COSYVOICE_PYTHON.is_file() and COSYVOICE_SCRIPT.is_file()
+    and (_cosyvoice_root / "cosyvoice" / "cli" / "cosyvoice.py").is_file()
+    and all((_cosyvoice_weights / name).is_file() for name in ("cosyvoice.yaml", "flow.pt", "hift.pt", "llm.pt"))
+)
+DEFAULT_VOICE_PRESET = "cosy_female" if _COSYVOICE_AVAILABLE and (
+    COSYVOICE_DEFAULT_PROMPT.is_file() or COSYVOICE_FALLBACK_PROMPT.is_file()) else "xiaoxiao"
 
 _ALL_BUILTIN_VOICES = {
     "cosy_female": {
@@ -104,6 +111,10 @@ BUILTIN_VOICES = (
     if _COSYVOICE_AVAILABLE
     else {k: v for k, v in _ALL_BUILTIN_VOICES.items() if not str(v.get("engine", "")).startswith("cosyvoice")}
 )
+if os.name == "nt":
+    BUILTIN_VOICES["windows_local"] = {"label": "Windows 本机离线语音", "engine": "windows_sapi"}
+if DEFAULT_VOICE_PRESET != "cosy_female":
+    BUILTIN_VOICES.pop("cosy_female", None)
 
 
 def parse_slice_seconds(raw_value, default: float = DEFAULT_SLICE_SECONDS) -> float:
@@ -138,6 +149,8 @@ def _as_bool(raw_value, *, default: bool = False) -> bool:
 
 def normalize_edition_mode(raw_value, default: str = "v2") -> str:
     text = str(raw_value if raw_value is not None else default).strip().lower()
+    if text == "dongge":
+        return "dongge"
     if text in {"original", "v1", "legacy", "8018"}:
         return "original"
     if text in {"v2", "hardcut", "8038"}:
@@ -598,7 +611,7 @@ def synthesize_voiceover(
             elif engine == "cosyvoice_custom":
                 raise RuntimeError("本机 CosyVoice 音色克隆环境未就绪，请改用内置音色或直接上传配音音频。")
 
-        if raw_audio is None:
+        if raw_audio is None and engine != "windows_sapi":
             # Edge-TTS neural voice synthesis
             edge_voice = (
                 descriptor["voice"]

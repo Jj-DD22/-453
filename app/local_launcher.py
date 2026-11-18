@@ -10,6 +10,8 @@ import time
 import urllib.request
 import webbrowser
 
+from local_edition import RELEASE_ID
+
 ROOT = Path(__file__).resolve().parent.parent
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -18,7 +20,7 @@ def healthy(url: str, port: int) -> bool:
     try:
         with opener.open(url + 'status', timeout=2) as r:
             d = json.load(r)
-        return d.get('instance_id') == f'v17-{port}' and 'local8038-' in d.get('release_id', '')
+        return d.get('instance_id') == f'v17-{port}' and d.get('release_id') == RELEASE_ID
     except Exception:
         return False
 
@@ -64,26 +66,18 @@ def _detect_lan_ips() -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--host', default='127.0.0.1' if os.name == 'nt' else '0.0.0.0')
     parser.add_argument('--port', type=int, default=8038)
     parser.add_argument('--no-browser', action='store_true')
     args, _ = parser.parse_known_args()
     port = args.port
-    lan_ips = _detect_lan_ips()
+    lan_ips = _detect_lan_ips() if args.host == '0.0.0.0' else []
     local_url = f'http://127.0.0.1:{port}/'
     check_url = f'http://{lan_ips[0]}:{port}/' if (args.host == '0.0.0.0' and lan_ips) else local_url
 
     if not healthy(check_url, port):
         if args.host == '0.0.0.0' and healthy(local_url, port):
-            # Upgrade an existing loopback-only instance to 0.0.0.0 LAN binding
-            lsof = subprocess.run(['lsof', '-tiTCP:' + str(port), '-sTCP:LISTEN'], capture_output=True, text=True)
-            for pid in lsof.stdout.split():
-                subprocess.run(['kill', pid], check=False)
-            for _ in range(10):
-                with socket.socket() as sock:
-                    if sock.connect_ex(('127.0.0.1', port)) != 0:
-                        break
-                time.sleep(0.3)
+            raise SystemExit(f'工作台已在本机运行。如要切换为局域网模式，请先结束该实例：{local_url}')
         with socket.socket() as sock:
             if sock.connect_ex(('127.0.0.1', port)) == 0:
                 raise SystemExit(f'{port} 已被其他程序占用，请关闭该实例后重试。')
@@ -102,10 +96,12 @@ def main():
         else:
             popen_kwargs['start_new_session'] = True
         with (data / f'local{port}.log').open('ab') as log:
-            subprocess.Popen(cmd, stdout=log, stderr=log, **popen_kwargs)
-        for _ in range(45):
+            process = subprocess.Popen(cmd, stdout=log, stderr=log, **popen_kwargs)
+        for _ in range(60):
             if healthy(check_url, port):
                 break
+            if process.poll() is not None:
+                raise SystemExit(f'工作台启动失败，请查看 {data / f"local{port}.log"}。')
             time.sleep(1)
         else:
             raise SystemExit(f'启动未完成，请查看 data/local{port}.log。')

@@ -121,6 +121,26 @@ def _write_srt(result: dict[str, Any], output_path: str | Path) -> Path:
     return destination
 
 
+def local_whisper_to_srt(wav_path: str | Path, output_path: str | Path, model_dir: str | Path) -> Path:
+    """Run the installed Chinese-capable Whisper model entirely on the local CPU."""
+    import wave
+    import numpy as np
+    from faster_whisper import WhisperModel
+
+    root = Path(model_dir).resolve()
+    if not all((root / name).is_file() for name in ("model.bin", "tokenizer.json", "config.json")):
+        raise FileNotFoundError(f"本机 Whisper 模型不完整：{root}")
+    model = WhisperModel(str(root), device="cpu", compute_type="int8", cpu_threads=4, local_files_only=True)
+    with wave.open(str(wav_path), "rb") as source:
+        if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, 16000):
+            raise ValueError("本机 Whisper 需要单声道 16 kHz 的 PCM 音频。")
+        samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+    segments, _ = model.transcribe(samples, language="zh", beam_size=3, vad_filter=True)
+    utterances = [{"start_time": round(s.start * 1000), "end_time": round(s.end * 1000),
+                   "transcript": s.text} for s in segments]
+    return _write_srt({"utterances": utterances}, output_path)
+
+
 def transcribe_to_srt(
     audio_path: str | Path,
     output_path: str | Path,
